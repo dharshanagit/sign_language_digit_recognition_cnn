@@ -6,4 +6,6 @@ mediapipe
 scikit-learn
 pillow
 streamlit
+streamlit-webrtc
+av
 keras
