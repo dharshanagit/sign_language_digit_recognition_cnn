@@ -1,101 +1,176 @@
 import tensorflow as tf
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Conv2D, MaxPooling2D
-from tensorflow.keras.layers import Flatten, Dense, Dropout
-from tensorflow.keras.callbacks import EarlyStopping
-import matplotlib.pyplot as plt
-
-train_path='dataset'
-
-
+from tensorflow.keras.layers import (
+    Conv2D,
+    MaxPooling2D,
+    Dense,
+    Dropout,
+    BatchNormalization,
+    GlobalAveragePooling2D
+)
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+import os
+import numpy as np
+from sklearn.utils.class_weight import compute_class_weight
 
 # Dataset path
 train_path = 'dataset'
 
-# Data augmentation
+IMG_SIZE = 64
+BATCH_SIZE = 32
+
+# ===============================
+# DATA AUGMENTATION (TRAIN ONLY)
+# ===============================
 train_datagen = ImageDataGenerator(
     rescale=1./255,
     validation_split=0.2,
-    rotation_range=10,
-    zoom_range=0.1,
-    width_shift_range=0.1,
-    height_shift_range=0.1,
-    brightness_range=[0.9, 1.1]
+
+    rotation_range=15,
+    zoom_range=0.2,
+    width_shift_range=0.2,
+    height_shift_range=0.2,
+    shear_range=0.2,
+    brightness_range=[0.8, 1.2]
 )
 
-# Training data
+val_datagen = ImageDataGenerator(
+    rescale=1./255,
+    validation_split=0.2
+)
+
+# ===============================
+# GENERATORS
+# ===============================
 train_generator = train_datagen.flow_from_directory(
     train_path,
-    target_size=(64,64),
-    batch_size=32,
+    target_size=(IMG_SIZE, IMG_SIZE),
+    batch_size=BATCH_SIZE,
+    color_mode='grayscale',
     class_mode='categorical',
     subset='training',
-    color_mode='grayscale',
     shuffle=True
 )
 
-# Validation data
-validation_generator = train_datagen.flow_from_directory(
+validation_generator = val_datagen.flow_from_directory(
     train_path,
-    target_size=(64,64),
-    batch_size=32,
-    class_mode='categorical',
+    target_size=(IMG_SIZE, IMG_SIZE),
+    batch_size=BATCH_SIZE,
     color_mode='grayscale',
-    subset='validation'
+    class_mode='categorical',
+    subset='validation',
+    shuffle=False
 )
 
-# CNN Model
+# Class info
+NUM_CLASSES = len(train_generator.class_indices)
+print("\nClass Mapping:", train_generator.class_indices)
+print("Total Classes:", NUM_CLASSES)
+
+# ===============================
+# CLASS WEIGHTS (IMPORTANT)
+# ===============================
+class_weights = compute_class_weight(
+    class_weight='balanced',
+    classes=np.unique(train_generator.classes),
+    y=train_generator.classes
+)
+
+class_weights = dict(enumerate(class_weights))
+
+# ===============================
+# CNN MODEL (IMPROVED)
+# ===============================
 model = Sequential()
 
-model.add(Conv2D(32,(3,3),activation='relu',input_shape=(64,64,1)))
+# Block 1
+model.add(Conv2D(32, (3,3), activation='relu', input_shape=(IMG_SIZE, IMG_SIZE, 1)))
+model.add(BatchNormalization())
 model.add(MaxPooling2D(2,2))
 
-model.add(Conv2D(64,(3,3),activation='relu'))
+# Block 2
+model.add(Conv2D(64, (3,3), activation='relu'))
+model.add(BatchNormalization())
 model.add(MaxPooling2D(2,2))
 
-model.add(Conv2D(128,(3,3),activation='relu'))
+# Block 3
+model.add(Conv2D(128, (3,3), activation='relu'))
+model.add(BatchNormalization())
 model.add(MaxPooling2D(2,2))
 
-model.add(Flatten())
+# Block 4
+model.add(Conv2D(256, (3,3), activation='relu'))
+model.add(BatchNormalization())
+model.add(MaxPooling2D(2,2))
 
-model.add(Dense(256,activation='relu'))
+# ===============================
+# REPLACED FLATTEN (IMPORTANT FIX)
+# ===============================
+model.add(GlobalAveragePooling2D())
 
+model.add(Dense(256, activation='relu'))
 model.add(Dropout(0.5))
 
-model.add(Dense(10,activation='softmax'))
+model.add(Dense(NUM_CLASSES, activation='softmax'))
 
-# Compile model
+# ===============================
+# COMPILATION (LOW LR FIX)
+# ===============================
 model.compile(
-    optimizer='adam',
+    optimizer=tf.keras.optimizers.Adam(learning_rate=0.0005),
     loss='categorical_crossentropy',
     metrics=['accuracy']
 )
 
+# ===============================
+# CALLBACKS
+# ===============================
 early_stop = EarlyStopping(
     monitor='val_accuracy',
-    patience=5,
+    patience=7,
     restore_best_weights=True
 )
 
-# Train model
+reduce_lr = ReduceLROnPlateau(
+    monitor='val_loss',
+    factor=0.3,
+    patience=3,
+    verbose=1
+)
+
+# ===============================
+# TRAINING
+# ===============================
 history = model.fit(
     train_generator,
     validation_data=validation_generator,
     epochs=25,
-    callbacks=[early_stop]
+    callbacks=[early_stop, reduce_lr],
+    class_weight=class_weights
 )
 
-# Save model
-model.save('models/asl_model.h5')
+# ===============================
+# SAVE MODEL
+# ===============================
+os.makedirs("models", exist_ok=True)
+model.save("models/asl_model.h5")
 
-print('Model Saved Successfully')
+print("\n✅ Model Saved Successfully!")
 
-# Plot Accuracy Graph
-plt.plot(history.history['accuracy'], label='Training Accuracy')
-plt.plot(history.history['val_accuracy'], label='Validation Accuracy')
-plt.xlabel('Epochs')
-plt.ylabel('Accuracy')
+# ===============================
+# PLOTS
+# ===============================
+import matplotlib.pyplot as plt
+
+plt.plot(history.history['accuracy'], label='Train Accuracy')
+plt.plot(history.history['val_accuracy'], label='Val Accuracy')
+plt.title("Accuracy Graph")
 plt.legend()
-plt.title('Training vs Validation Accuracy')
+plt.show()
+
+plt.plot(history.history['loss'], label='Train Loss')
+plt.plot(history.history['val_loss'], label='Val Loss')
+plt.title("Loss Graph")
+plt.legend()
 plt.show()

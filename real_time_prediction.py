@@ -1,15 +1,41 @@
 import cv2
 import numpy as np
 from tensorflow.keras.models import load_model
+from collections import deque, Counter
 
-# Load trained model
+# ===============================
+# LOAD MODEL
+# ===============================
 model = load_model("models/asl_model.h5")
 
-# Class labels
-class_names = ['0','1','2','3','4','5','6','7','8','9']
+# ===============================
+# CLASS LABELS
+# MUST MATCH TRAINING ORDER
+# ===============================
+class_names = [
+    '0','1','2','3','4','5','6','7','8','9',
+    'A','B','C','D','E','F','G','H','I','J',
+    'K','L','M','N','O','P','Q','R','S','T',
+    'U','V','W','X','Y','Z'
+]
 
-# Open webcam
+# ===============================
+# WEBCAM
+# ===============================
 cap = cv2.VideoCapture(0)
+
+sentence = ""
+
+# Prediction smoothing
+pred_buffer = deque(maxlen=20)
+
+stable_char = ""
+stable_count = 0
+
+# 🔥 LOWERED THRESHOLD
+CONF_THRESHOLD = 0.75
+
+STABLE_FRAMES = 10
 
 while True:
 
@@ -18,74 +44,199 @@ while True:
     if not ret:
         break
 
-    # Flip frame
     frame = cv2.flip(frame, 1)
 
-    # ROI box
-    x1, y1 = 100, 100
-    x2, y2 = 300, 300
+    # ===============================
+    # BIGGER ROI (IMPORTANT FOR DIGITS)
+    # ===============================
+    x1, y1 = 70, 70
+    x2, y2 = 400, 400
 
-    # Draw rectangle
-    cv2.rectangle(frame, (x1,y1), (x2,y2), (0,255,0), 2)
+    cv2.rectangle(
+        frame,
+        (x1, y1),
+        (x2, y2),
+        (0,255,0),
+        2
+    )
 
-    # Crop ROI
     roi = frame[y1:y2, x1:x2]
 
-    # Convert to grayscale
-    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    # ===============================
+    # PREPROCESSING
+    # ===============================
+    gray = cv2.cvtColor(
+        roi,
+        cv2.COLOR_BGR2GRAY
+    )
 
-    # Blur to reduce noise
-    blur = cv2.GaussianBlur(gray, (5,5), 0)
-
-    # Threshold
-    _, thresh = cv2.threshold(
-        blur,
-        120,
-        255,
-        cv2.THRESH_BINARY_INV
+    # Mild blur only
+    gray = cv2.GaussianBlur(
+        gray,
+        (5,5),
+        0
     )
 
     # Resize
-    img = cv2.resize(thresh, (64,64))
+    img = cv2.resize(
+        gray,
+        (64,64)
+    )
 
     # Normalize
-    img = img / 255.0
+    img = img.astype("float32") / 255.0
 
     # Reshape
     img = img.reshape(1,64,64,1)
 
-    # Prediction
-    prediction = model.predict(img, verbose=0)
+    # ===============================
+    # PREDICTION
+    # ===============================
+    prediction = model.predict(
+        img,
+        verbose=0
+    )[0]
 
-    predicted_class = np.argmax(prediction)
+    # Top prediction
+    class_index = np.argmax(prediction)
 
-    confidence = np.max(prediction)
+    confidence = prediction[class_index]
 
-    label = class_names[predicted_class]
+    label = class_names[class_index]
 
-    # Show prediction only if confidence high
-    if confidence > 0.70:
+    # ===============================
+    # TOP 3 DEBUGGING
+    # ===============================
+    top3_idx = prediction.argsort()[-3:][::-1]
 
+    top3_text = ""
+
+    for idx in top3_idx:
+
+        top3_text += f"{class_names[idx]}:{prediction[idx]:.2f} "
+
+    # ===============================
+    # CONFIDENCE CHECK
+    # ===============================
+    if confidence > CONF_THRESHOLD:
+
+        pred_buffer.append(label)
+
+        most_common = Counter(
+            pred_buffer
+        ).most_common(1)[0][0]
+
+        # Stability logic
+        if most_common == stable_char:
+
+            stable_count += 1
+
+        else:
+
+            stable_char = most_common
+
+            stable_count = 0
+
+        # Add to sentence
+        if stable_count >= STABLE_FRAMES:
+
+            # Prevent duplicate spam
+            if len(sentence) == 0 or sentence[-1] != stable_char:
+
+                sentence += stable_char
+
+            stable_count = 0
+
+        # ===============================
+        # DISPLAY
+        # ===============================
         cv2.putText(
             frame,
-            f"Prediction: {label}",
-            (50,50),
+            f"Prediction: {most_common}",
+            (40,50),
             cv2.FONT_HERSHEY_SIMPLEX,
             1,
             (0,255,0),
             2
         )
 
-    # Show threshold image
-    cv2.imshow("Threshold", thresh)
+        cv2.putText(
+            frame,
+            f"Confidence: {confidence:.2f}",
+            (40,90),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0,255,255),
+            2
+        )
 
-    # Show webcam
-    cv2.imshow("ASL Digit Recognition", frame)
+    else:
+
+        cv2.putText(
+            frame,
+            "Low Confidence",
+            (40,50),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1,
+            (0,0,255),
+            2
+        )
+
+        pred_buffer.clear()
+
+        stable_count = 0
+
+        stable_char = ""
+
+    # ===============================
+    # TOP 3 DISPLAY
+    # ===============================
+    cv2.putText(
+        frame,
+        top3_text,
+        (40,130),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.6,
+        (255,255,255),
+        2
+    )
+
+    # Sentence
+    cv2.putText(
+        frame,
+        f"Sentence: {sentence}",
+        (40,470),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        1,
+        (255,0,0),
+        2
+    )
+
+    # Instructions
+    cv2.putText(
+        frame,
+        "C = Clear | Q = Quit",
+        (40,520),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.7,
+        (255,255,255),
+        2
+    )
+
+    # Show
+    cv2.imshow(
+        "ASL Recognition",
+        frame
+    )
 
     key = cv2.waitKey(1)
 
     if key == ord('q'):
         break
 
+    if key == ord('c'):
+        sentence = ""
+
 cap.release()
+
 cv2.destroyAllWindows()
